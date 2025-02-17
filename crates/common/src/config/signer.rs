@@ -1,34 +1,47 @@
 use bimap::BiHashMap;
-use eyre::Result;
+use eyre::{bail, Result};
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 use super::{
-    constants::{SIGNER_IMAGE, SIGNER_SERVER_ENV},
+    constants::SIGNER_IMAGE_DEFAULT,
     utils::{load_env_var, load_jwts},
-    CommitBoostConfig,
+    CommitBoostConfig, SIGNER_PORT_ENV,
 };
 use crate::{
-    loader::SignerLoader,
+    signer::{ProxyStore, SignerLoader},
     types::{Chain, Jwt, ModuleId},
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct SignerConfig {
-    /// Docker image of the module
-    #[serde(default = "default_signer")]
-    pub docker_image: String,
-    /// Which keys to load
-    pub loader: SignerLoader,
+#[serde(rename_all = "snake_case")]
+pub enum SignerConfig {
+    /// Local signer module
+    Local {
+        /// Docker image of the module
+        #[serde(default = "default_signer")]
+        docker_image: String,
+        /// Which keys to load
+        loader: SignerLoader,
+        /// How to store keys
+        store: Option<ProxyStore>,
+    },
+    /// Remote signer module with compatible API
+    Remote {
+        /// Complete url of the base API endpoint
+        url: Url,
+    },
 }
 
 fn default_signer() -> String {
-    SIGNER_IMAGE.to_string()
+    SIGNER_IMAGE_DEFAULT.to_string()
 }
 
 #[derive(Debug)]
 pub struct StartSignerConfig {
     pub chain: Chain,
     pub loader: SignerLoader,
+    pub store: Option<ProxyStore>,
     pub server_port: u16,
     pub jwts: BiHashMap<ModuleId, Jwt>,
 }
@@ -38,13 +51,14 @@ impl StartSignerConfig {
         let config = CommitBoostConfig::from_env_path()?;
 
         let jwts = load_jwts()?;
-        let server_port = load_env_var(SIGNER_SERVER_ENV)?.parse()?;
+        let server_port = load_env_var(SIGNER_PORT_ENV)?.parse()?;
 
-        Ok(StartSignerConfig {
-            chain: config.chain,
-            loader: config.signer.expect("Signer config is missing").loader,
-            server_port,
-            jwts,
-        })
+        match config.signer {
+            Some(SignerConfig::Local { loader, store, .. }) => {
+                Ok(StartSignerConfig { chain: config.chain, loader, server_port, jwts, store })
+            }
+            Some(SignerConfig::Remote { .. }) => bail!("Remote signer configured"),
+            None => bail!("Signer config is missing"),
+        }
     }
 }

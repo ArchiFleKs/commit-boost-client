@@ -65,15 +65,23 @@ impl BuilderApi<MyBuilderState> for MyBuilderApi {
         get_status(req_headers, state).await
     }
 
-    fn extra_routes() -> Option<Router<PbsState<MyBuilderState>>> {
+    async fn reload(state: PbsState<MyBuilderState>) -> Result<PbsState<MyBuilderState>> {
+        let (pbs_config, extra_config) = load_pbs_custom_config::<ExtraConfig>().await?;
+        let mut data = state.data.clone();
+        data.inc_amount = extra_config.inc_amount;
+
+        Ok(PbsState::new(pbs_config).with_data(data))
+    }
+
+    fn extra_routes() -> Option<Router<PbsStateGuard<MyBuilderState>>> {
         let mut router = Router::new();
         router = router.route("/check", get(handle_check));
         Some(router)
     }
 }
 
-async fn handle_check(State(state): State<PbsState<MyBuilderState>>) -> Response {
-    (StatusCode::OK, format!("Received {count} status requests!", count = state.data.get()))
+async fn handle_check(State(state): State<PbsStateGuard<MyBuilderState>>) -> Response {
+    (StatusCode::OK, format!("Received {count} status requests!", count = state.read().data.get()))
         .into_response()
 }
 
@@ -81,14 +89,15 @@ async fn handle_check(State(state): State<PbsState<MyBuilderState>>) -> Response
 async fn main() -> Result<()> {
     color_eyre::install()?;
 
-    let (pbs_config, extra) = load_pbs_custom_config::<ExtraConfig>()?;
-    let _guard = initialize_pbs_tracing_log();
+    let (pbs_config, extra) = load_pbs_custom_config::<ExtraConfig>().await?;
+    let chain = pbs_config.chain;
+    let _guard = initialize_pbs_tracing_log()?;
 
     let custom_state = MyBuilderState::from_config(extra);
     let state = PbsState::new(pbs_config).with_data(custom_state);
 
     PbsService::register_metric(Box::new(CHECK_RECEIVED_COUNTER.clone()));
-    PbsService::init_metrics()?;
+    PbsService::init_metrics(chain)?;
 
     PbsService::run::<MyBuilderState, MyBuilderApi>(state).await
 }

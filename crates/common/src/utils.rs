@@ -1,5 +1,5 @@
 use std::{
-    env,
+    net::Ipv4Addr,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -11,25 +11,25 @@ use axum::http::HeaderValue;
 use blst::min_pk::{PublicKey, Signature};
 use rand::{distributions::Alphanumeric, Rng};
 use reqwest::header::HeaderMap;
+use serde::{de::DeserializeOwned, Serialize};
+use serde_json::Value;
 use tracing::Level;
 use tracing_appender::{non_blocking::WorkerGuard, rolling::Rotation};
 use tracing_subscriber::{fmt::Layer, prelude::*, EnvFilter};
 
 use crate::{
-    config::{
-        default_log_level, load_optional_env_var, CB_BASE_LOG_PATH, MAX_LOG_FILES_ENV,
-        PBS_MODULE_NAME, RUST_LOG_ENV, USE_FILE_LOGS_ENV,
-    },
+    config::{load_optional_env_var, LogsSettings, PBS_MODULE_NAME},
     pbs::HEADER_VERSION_VALUE,
     types::Chain,
 };
 
-const SECONDS_PER_SLOT: u64 = 12;
 const MILLIS_PER_SECOND: u64 = 1_000;
 
+pub fn timestamp_of_slot_start_sec(slot: u64, chain: Chain) -> u64 {
+    chain.genesis_time_sec() + slot * chain.slot_time_sec()
+}
 pub fn timestamp_of_slot_start_millis(slot: u64, chain: Chain) -> u64 {
-    let seconds_since_genesis = chain.genesis_time_sec() + slot * SECONDS_PER_SLOT;
-    seconds_since_genesis * MILLIS_PER_SECOND
+    timestamp_of_slot_start_sec(slot, chain) * MILLIS_PER_SECOND
 }
 pub fn ms_into_slot(slot: u64, chain: Chain) -> u64 {
     let slot_start_ms = timestamp_of_slot_start_millis(slot, chain);
@@ -54,16 +54,25 @@ pub fn utcnow_ns() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64
 }
 
-// Formatting
-const WEI_PER_ETH: u64 = 1_000_000_000_000_000_000;
-pub fn wei_to_eth(wei: &U256) -> f64 {
-    wei.to_string().parse::<f64>().unwrap_or_default() / WEI_PER_ETH as f64
-}
+pub const WEI_PER_ETH: u64 = 1_000_000_000_000_000_000;
 pub fn eth_to_wei(eth: f64) -> U256 {
     U256::from((eth * WEI_PER_ETH as f64).floor())
 }
 
 // Serde
+/// Test that the encoding and decoding works, returns the decoded struct
+pub fn test_encode_decode<T: Serialize + DeserializeOwned>(d: &str) -> T {
+    let decoded = serde_json::from_str::<T>(d).expect("deserialize");
+
+    // re-encode to make sure that different formats are ignored
+    let encoded = serde_json::to_string(&decoded).unwrap();
+    let original_v: Value = serde_json::from_str(d).unwrap();
+    let encoded_v: Value = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(original_v, encoded_v, "encode mismatch");
+
+    decoded
+}
+
 pub mod as_str {
     use std::{fmt::Display, str::FromStr};
 
@@ -88,16 +97,19 @@ pub mod as_str {
 }
 
 pub mod as_eth_str {
-    use alloy::primitives::U256;
+    use alloy::primitives::{
+        utils::{format_ether, parse_ether},
+        U256,
+    };
     use serde::Deserialize;
 
-    use super::{eth_to_wei, wei_to_eth};
+    use super::eth_to_wei;
 
     pub fn serialize<S>(data: &U256, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        let s = wei_to_eth(data).to_string();
+        let s = format_ether(*data);
         serializer.serialize_str(&s)
     }
 
@@ -105,8 +117,22 @@ pub mod as_eth_str {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = f64::deserialize(deserializer)?;
-        Ok(eth_to_wei(s))
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum StringOrF64 {
+            Str(String),
+            F64(f64),
+        }
+
+        let value = StringOrF64::deserialize(deserializer)?;
+        let wei = match value {
+            StringOrF64::Str(s) => {
+                parse_ether(&s).map_err(|_| serde::de::Error::custom("invalid eth amount"))?
+            }
+            StringOrF64::F64(f) => eth_to_wei(f),
+        };
+
+        Ok(wei)
     }
 }
 
@@ -114,8 +140,16 @@ pub const fn default_u64<const U: u64>() -> u64 {
     U
 }
 
+pub const fn default_u16<const U: u16>() -> u16 {
+    U
+}
+
 pub const fn default_bool<const U: bool>() -> bool {
     U
+}
+
+pub const fn default_host() -> Ipv4Addr {
+    Ipv4Addr::LOCALHOST
 }
 
 pub const fn default_u256() -> U256 {
@@ -123,33 +157,33 @@ pub const fn default_u256() -> U256 {
 }
 
 // LOGGING
-pub fn initialize_tracing_log(module_id: &str) -> WorkerGuard {
-    let level_env = std::env::var(RUST_LOG_ENV).unwrap_or(default_log_level());
-    // Log level for stdout
-    let stdout_log_level = match level_env.parse::<Level>() {
-        Ok(f) => f,
-        Err(_) => {
-            eprintln!("Invalid RUST_LOG value {}, defaulting to info", level_env);
-            Level::INFO
-        }
-    };
-    let stdout_filter = format_crates_filter(Level::INFO.as_str(), stdout_log_level.as_str());
+pub fn initialize_tracing_log(module_id: &str) -> eyre::Result<WorkerGuard> {
+    let settings = LogsSettings::from_env_config()?;
 
-    let use_file_logs = load_optional_env_var(USE_FILE_LOGS_ENV)
-        .map(|s| s.parse().expect("failed to parse USE_FILE_LOGS"))
-        .unwrap_or(false);
+    // Use file logs only if setting is set
+    let use_file_logs = settings.is_some();
+    let settings = settings.unwrap_or_default();
+
+    // Log level for stdout
+
+    let stdout_log_level = if let Some(log_level) = load_optional_env_var("RUST_LOG") {
+        log_level.parse::<Level>().expect("invalid RUST_LOG value")
+    } else {
+        settings.log_level.parse::<Level>().expect("invalid log_level value in settings")
+    };
+
+    let stdout_filter = format_crates_filter(Level::INFO.as_str(), stdout_log_level.as_str());
 
     if use_file_logs {
         // Log all events to a rolling log file.
         let mut builder =
             tracing_appender::rolling::Builder::new().filename_prefix(module_id.to_lowercase());
-        if let Ok(value) = env::var(MAX_LOG_FILES_ENV) {
-            builder = builder
-                .max_log_files(value.parse().expect("MAX_LOG_FILES is not a valid usize value"));
+        if let Some(value) = settings.max_log_files {
+            builder = builder.max_log_files(value);
         }
         let file_appender = builder
             .rotation(Rotation::DAILY)
-            .build(CB_BASE_LOG_PATH)
+            .build(settings.log_dir_path)
             .expect("failed building rolling file appender");
 
         let (writer, guard) = tracing_appender::non_blocking(file_appender);
@@ -169,7 +203,7 @@ pub fn initialize_tracing_log(module_id: &str) -> WorkerGuard {
             .with_filter(file_log_filter);
 
         tracing_subscriber::registry().with(stdout_layer.and_then(file_layer)).init();
-        guard
+        Ok(guard)
     } else {
         let (writer, guard) = tracing_appender::non_blocking(std::io::stdout());
         let stdout_layer = tracing_subscriber::fmt::layer()
@@ -177,11 +211,11 @@ pub fn initialize_tracing_log(module_id: &str) -> WorkerGuard {
             .with_writer(writer)
             .with_filter(stdout_filter);
         tracing_subscriber::registry().with(stdout_layer).init();
-        guard
+        Ok(guard)
     }
 }
 
-pub fn initialize_pbs_tracing_log() -> WorkerGuard {
+pub fn initialize_pbs_tracing_log() -> eyre::Result<WorkerGuard> {
     initialize_tracing_log(PBS_MODULE_NAME)
 }
 
@@ -237,4 +271,25 @@ pub fn get_user_agent(req_headers: &HeaderMap) -> String {
 pub fn get_user_agent_with_version(req_headers: &HeaderMap) -> eyre::Result<HeaderValue> {
     let ua = get_user_agent(req_headers);
     Ok(HeaderValue::from_str(&format!("commit-boost/{HEADER_VERSION_VALUE} {}", ua))?)
+}
+
+#[cfg(unix)]
+pub async fn wait_for_signal() -> eyre::Result<()> {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigint = signal(SignalKind::interrupt())?;
+    let mut sigterm = signal(SignalKind::terminate())?;
+
+    tokio::select! {
+        _ = sigint.recv() => {}
+        _ = sigterm.recv() => {}
+    }
+
+    Ok(())
+}
+
+#[cfg(windows)]
+pub async fn wait_for_signal() -> eyre::Result<()> {
+    tokio::signal::ctrl_c().await?;
+    Ok(())
 }

@@ -22,8 +22,9 @@ use cb_common::{
     signature::sign_builder_root,
     signer::BlsSecretKey,
     types::Chain,
-    utils::blst_pubkey_to_alloy,
+    utils::{blst_pubkey_to_alloy, timestamp_of_slot_start_sec},
 };
+use cb_pbs::MAX_SIZE_SUBMIT_BLOCK;
 use tokio::net::TcpListener;
 use tracing::debug;
 use tree_hash::TreeHash;
@@ -41,6 +42,7 @@ pub async fn start_mock_relay_service(state: Arc<MockRelayState>, port: u16) -> 
 pub struct MockRelayState {
     pub chain: Chain,
     pub signer: BlsSecretKey,
+    large_body: bool,
     received_get_header: Arc<AtomicU64>,
     received_get_status: Arc<AtomicU64>,
     received_register_validator: Arc<AtomicU64>,
@@ -60,6 +62,9 @@ impl MockRelayState {
     pub fn received_submit_block(&self) -> u64 {
         self.received_submit_block.load(Ordering::Relaxed)
     }
+    pub fn large_body(&self) -> bool {
+        self.large_body
+    }
 }
 
 impl MockRelayState {
@@ -67,11 +72,16 @@ impl MockRelayState {
         Self {
             chain,
             signer,
+            large_body: false,
             received_get_header: Default::default(),
             received_get_status: Default::default(),
             received_register_validator: Default::default(),
             received_submit_block: Default::default(),
         }
+    }
+
+    pub fn with_large_body(self) -> Self {
+        Self { large_body: true, ..self }
     }
 }
 
@@ -95,12 +105,13 @@ async fn handle_get_header(
     let mut response = GetHeaderResponse::default();
     response.data.message.header.parent_hash = parent_hash;
     response.data.message.header.block_hash.0[0] = 1;
-    response.data.message.set_value(U256::from(10));
+    response.data.message.value = U256::from(10);
     response.data.message.pubkey = blst_pubkey_to_alloy(&state.signer.sk_to_pk());
+    response.data.message.header.timestamp = timestamp_of_slot_start_sec(0, state.chain);
+
     let object_root = response.data.message.tree_hash_root().0;
     response.data.signature = sign_builder_root(state.chain, &state.signer, object_root);
-
-    (StatusCode::OK, axum::Json(response)).into_response()
+    (StatusCode::OK, Json(response)).into_response()
 }
 
 async fn handle_get_status(State(state): State<Arc<MockRelayState>>) -> impl IntoResponse {
@@ -117,8 +128,12 @@ async fn handle_register_validator(
     StatusCode::OK
 }
 
-async fn handle_submit_block(State(state): State<Arc<MockRelayState>>) -> impl IntoResponse {
+async fn handle_submit_block(State(state): State<Arc<MockRelayState>>) -> Response {
     state.received_submit_block.fetch_add(1, Ordering::Relaxed);
-    let response = SubmitBlindedBlockResponse::default();
-    (StatusCode::OK, Json(response)).into_response()
+    if state.large_body() {
+        (StatusCode::OK, Json(vec![1u8; 1 + MAX_SIZE_SUBMIT_BLOCK])).into_response()
+    } else {
+        let response = SubmitBlindedBlockResponse::default();
+        (StatusCode::OK, Json(response)).into_response()
+    }
 }

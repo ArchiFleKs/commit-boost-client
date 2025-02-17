@@ -8,17 +8,20 @@ use crate::error::BlstErrorWrapper;
 
 #[derive(Debug, Error)]
 pub enum PbsError {
-    #[error("axum error: {0}")]
+    #[error("axum error: {0:?}")]
     AxumError(#[from] axum::Error),
 
-    #[error("reqwest error: {0}")]
+    #[error("reqwest error: {0:?}")]
     Reqwest(#[from] reqwest::Error),
 
-    #[error("serde decode error: {0}")]
-    SerdeDecodeError(#[from] serde_json::Error),
+    #[error("json decode error: {err:?}, raw: {raw}")]
+    JsonDecode { err: serde_json::Error, raw: String },
 
-    #[error("relay response error. Code: {code}, err: {error_msg}")]
+    #[error("relay response error. Code: {code}, err: {error_msg:?}")]
     RelayResponse { error_msg: String, code: u16 },
+
+    #[error("response size exceeds max size: max: {max} raw: {raw}")]
+    PayloadTooLarge { max: usize, raw: String },
 
     #[error("failed validating relay response: {0}")]
     Validation(#[from] ValidationError),
@@ -30,6 +33,11 @@ pub enum PbsError {
 impl PbsError {
     pub fn is_timeout(&self) -> bool {
         matches!(self, PbsError::Reqwest(err) if err.is_timeout())
+    }
+
+    /// Whether the error is retryable in requests to relays
+    pub fn should_retry(&self) -> bool {
+        matches!(self, PbsError::RelayResponse { .. } | PbsError::Reqwest { .. })
     }
 }
 
@@ -66,4 +74,13 @@ pub enum ValidationError {
 
     #[error("failed signature verification: {0:?}")]
     Sigverify(#[from] BlstErrorWrapper),
+
+    #[error("wrong timestamp: expected {expected} got {got}")]
+    TimestampMismatch { expected: u64, got: u64 },
+
+    #[error("wrong block number: parent: {parent} header: {header}")]
+    BlockNumberMismatch { parent: u64, header: u64 },
+
+    #[error("invalid gas limit: parent: {parent} header: {header}")]
+    GasLimit { parent: u64, header: u64 },
 }

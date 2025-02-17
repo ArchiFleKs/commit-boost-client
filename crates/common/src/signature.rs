@@ -1,12 +1,11 @@
 use alloy::rpc::types::beacon::{constants::BLS_DST_SIG, BlsPublicKey, BlsSignature};
-use ssz_derive::{Decode, Encode};
 use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 
 use crate::{
     constants::{COMMIT_BOOST_DOMAIN, GENESIS_VALIDATORS_ROOT},
     error::BlstErrorWrapper,
-    signer::{schemes::bls::verify_bls_signature, BlsSecretKey},
+    signer::{verify_bls_signature, BlsSecretKey},
     types::Chain,
 };
 
@@ -16,7 +15,7 @@ pub fn sign_message(secret_key: &BlsSecretKey, msg: &[u8]) -> BlsSignature {
 }
 
 pub fn compute_signing_root(object_root: [u8; 32], signing_domain: [u8; 32]) -> [u8; 32] {
-    #[derive(Default, Debug, Encode, Decode, TreeHash)]
+    #[derive(Default, Debug, TreeHash)]
     struct SigningData {
         object_root: [u8; 32],
         signing_domain: [u8; 32],
@@ -26,8 +25,11 @@ pub fn compute_signing_root(object_root: [u8; 32], signing_domain: [u8; 32]) -> 
     signing_data.tree_hash_root().0
 }
 
+// NOTE: this currently works only for builder domain signatures and
+// verifications
+// ref: https://github.com/ralexstokes/ethereum-consensus/blob/cf3c404043230559660810bc0c9d6d5a8498d819/ethereum-consensus/src/builder/mod.rs#L26-L29
 pub fn compute_domain(chain: Chain, domain_mask: [u8; 4]) -> [u8; 32] {
-    #[derive(Debug, Encode, Decode, TreeHash)]
+    #[derive(Debug, TreeHash)]
     struct ForkData {
         fork_version: [u8; 4],
         genesis_validators_root: [u8; 32],
@@ -36,7 +38,7 @@ pub fn compute_domain(chain: Chain, domain_mask: [u8; 4]) -> [u8; 32] {
     let mut domain = [0u8; 32];
     domain[..4].copy_from_slice(&domain_mask);
 
-    let fork_version = chain.fork_version();
+    let fork_version = chain.genesis_fork_version();
     let fd = ForkData { fork_version, genesis_validators_root: GENESIS_VALIDATORS_ROOT };
     let fork_data_root = fd.tree_hash_root();
 
@@ -101,6 +103,10 @@ mod tests {
         assert_eq!(
             compute_domain(Chain::Holesky, APPLICATION_BUILDER_DOMAIN),
             Chain::Holesky.builder_domain()
+        );
+        assert_eq!(
+            compute_domain(Chain::Sepolia, APPLICATION_BUILDER_DOMAIN),
+            Chain::Sepolia.builder_domain()
         );
         assert_eq!(
             compute_domain(Chain::Helder, APPLICATION_BUILDER_DOMAIN),

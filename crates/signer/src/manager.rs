@@ -3,51 +3,23 @@ use std::collections::HashMap;
 use alloy::rpc::types::beacon::BlsSignature;
 use cb_common::{
     commit::request::{
-        ProxyDelegationBls, ProxyDelegationEcdsa, SignedProxyDelegationBls,
+        ConsensusProxyMap, ProxyDelegationBls, ProxyDelegationEcdsa, SignedProxyDelegationBls,
         SignedProxyDelegationEcdsa,
     },
     signer::{
-        schemes::{
-            bls::BlsPublicKey,
-            ecdsa::{EcdsaPublicKey, EcdsaSignature},
-        },
-        BlsSigner, ConsensusSigner, EcdsaSigner,
+        BlsProxySigner, BlsPublicKey, BlsSigner, ConsensusSigner, EcdsaProxySigner, EcdsaPublicKey,
+        EcdsaSignature, EcdsaSigner, ProxySigners, ProxyStore,
     },
     types::{Chain, ModuleId},
 };
-use derive_more::derive::Deref;
+use eyre::OptionExt;
 use tree_hash::TreeHash;
 
 use crate::error::SignerModuleError;
 
-// For extra safety and to avoid risking signing malicious messages, use a proxy
-// setup: proposer creates a new ephemeral keypair which will be used to sign
-// commit messages, it also signs a ProxyDelegation associating the new keypair
-// with its consensus pubkey When a new commit module starts, pass the
-// ProxyDelegation msg and then sign all future commit messages with the proxy
-// key for slashing the faulty message + proxy delegation can be used
-#[derive(Clone, Deref)]
-pub struct BlsProxySigner {
-    #[deref]
-    signer: BlsSigner,
-    delegation: SignedProxyDelegationBls,
-}
-
-#[derive(Clone, Deref)]
-pub struct EcdsaProxySigner {
-    #[deref]
-    signer: EcdsaSigner,
-    delegation: SignedProxyDelegationEcdsa,
-}
-
-#[derive(Default)]
-struct ProxySigners {
-    bls_signers: HashMap<BlsPublicKey, BlsProxySigner>,
-    ecdsa_signers: HashMap<EcdsaPublicKey, EcdsaProxySigner>,
-}
-
 pub struct SigningManager {
     chain: Chain,
+    proxy_store: Option<ProxyStore>,
     consensus_signers: HashMap<BlsPublicKey, ConsensusSigner>,
     proxy_signers: ProxySigners,
     /// Map of module ids to their associated proxy pubkeys.
@@ -58,30 +30,60 @@ pub struct SigningManager {
 }
 
 impl SigningManager {
-    pub fn new(chain: Chain) -> Self {
-        Self {
+    pub fn new(chain: Chain, proxy_store: Option<ProxyStore>) -> eyre::Result<Self> {
+        let mut manager = Self {
             chain,
+            proxy_store,
             consensus_signers: Default::default(),
             proxy_signers: Default::default(),
             proxy_pubkeys_bls: Default::default(),
             proxy_pubkeys_ecdsa: Default::default(),
+        };
+
+        if let Some(store) = &manager.proxy_store {
+            let (proxies, bls, ecdsa) = store.load_proxies()?;
+            manager.proxy_signers = proxies;
+            manager.proxy_pubkeys_bls = bls;
+            manager.proxy_pubkeys_ecdsa = ecdsa;
         }
+
+        Ok(manager)
     }
 
     pub fn add_consensus_signer(&mut self, signer: ConsensusSigner) {
         self.consensus_signers.insert(signer.pubkey(), signer);
     }
 
-    pub fn add_proxy_signer_bls(&mut self, proxy: BlsProxySigner, module_id: ModuleId) {
+    pub fn add_proxy_signer_bls(
+        &mut self,
+        proxy: BlsProxySigner,
+        module_id: ModuleId,
+    ) -> eyre::Result<()> {
+        if let Some(store) = &self.proxy_store {
+            store.store_proxy_bls(&module_id, &proxy)?;
+        }
+
         let proxy_pubkey = proxy.pubkey();
         self.proxy_signers.bls_signers.insert(proxy.pubkey(), proxy);
-        self.proxy_pubkeys_bls.entry(module_id).or_default().push(proxy_pubkey)
+        self.proxy_pubkeys_bls.entry(module_id).or_default().push(proxy_pubkey);
+
+        Ok(())
     }
 
-    pub fn add_proxy_signer_ecdsa(&mut self, proxy: EcdsaProxySigner, module_id: ModuleId) {
+    pub fn add_proxy_signer_ecdsa(
+        &mut self,
+        proxy: EcdsaProxySigner,
+        module_id: ModuleId,
+    ) -> eyre::Result<()> {
+        if let Some(store) = &self.proxy_store {
+            store.store_proxy_ecdsa(&module_id, &proxy)?;
+        }
+
         let proxy_pubkey = proxy.pubkey();
         self.proxy_signers.ecdsa_signers.insert(proxy.pubkey(), proxy);
-        self.proxy_pubkeys_ecdsa.entry(module_id).or_default().push(proxy_pubkey)
+        self.proxy_pubkeys_ecdsa.entry(module_id).or_default().push(proxy_pubkey);
+
+        Ok(())
     }
 
     pub async fn create_proxy_bls(
@@ -97,7 +99,8 @@ impl SigningManager {
         let delegation = SignedProxyDelegationBls { signature, message };
         let proxy_signer = BlsProxySigner { signer, delegation };
 
-        self.add_proxy_signer_bls(proxy_signer, module_id);
+        self.add_proxy_signer_bls(proxy_signer, module_id)
+            .map_err(|err| SignerModuleError::Internal(err.to_string()))?;
 
         Ok(delegation)
     }
@@ -115,7 +118,8 @@ impl SigningManager {
         let delegation = SignedProxyDelegationEcdsa { signature, message };
         let proxy_signer = EcdsaProxySigner { signer, delegation };
 
-        self.add_proxy_signer_ecdsa(proxy_signer, module_id);
+        self.add_proxy_signer_ecdsa(proxy_signer, module_id)
+            .map_err(|err| SignerModuleError::Internal(err.to_string()))?;
 
         Ok(delegation)
     }
@@ -180,12 +184,22 @@ impl SigningManager {
         self.consensus_signers.contains_key(pubkey)
     }
 
-    pub fn has_proxy_ecdsa(&self, ecdsa_pk: &EcdsaPublicKey) -> bool {
-        self.proxy_signers.ecdsa_signers.contains_key(ecdsa_pk)
+    pub fn has_proxy_bls_for_module(&self, bls_pk: &BlsPublicKey, module_id: &ModuleId) -> bool {
+        match self.proxy_pubkeys_bls.get(module_id) {
+            Some(keys) => keys.contains(bls_pk),
+            None => false,
+        }
     }
 
-    pub fn has_proxy_bls(&self, bls_pk: &BlsPublicKey) -> bool {
-        self.proxy_signers.bls_signers.contains_key(bls_pk)
+    pub fn has_proxy_ecdsa_for_module(
+        &self,
+        ecdsa_pk: &EcdsaPublicKey,
+        module_id: &ModuleId,
+    ) -> bool {
+        match self.proxy_pubkeys_ecdsa.get(module_id) {
+            Some(keys) => keys.contains(ecdsa_pk),
+            None => false,
+        }
     }
 
     pub fn get_delegation_bls(
@@ -209,13 +223,50 @@ impl SigningManager {
             .map(|x| x.delegation)
             .ok_or(SignerModuleError::UnknownProxySigner(pubkey.as_ref().to_vec()))
     }
+
+    pub fn get_consensus_proxy_maps(
+        &self,
+        module_id: &ModuleId,
+    ) -> eyre::Result<Vec<ConsensusProxyMap>> {
+        let consensus = self.consensus_pubkeys();
+        let proxy_bls = self.proxy_pubkeys_bls.get(module_id).cloned().unwrap_or_default();
+        let proxy_ecdsa = self.proxy_pubkeys_ecdsa.get(module_id).cloned().unwrap_or_default();
+
+        let mut keys: Vec<_> = consensus.into_iter().map(ConsensusProxyMap::new).collect();
+
+        for bls in proxy_bls {
+            let delegator = self.get_delegation_bls(&bls)?.message.delegator;
+            let entry = keys
+                .iter_mut()
+                .find(|x| x.consensus == delegator)
+                .ok_or_eyre("missing consensus")?;
+
+            entry.proxy_bls.push(bls);
+        }
+
+        for ecdsa in proxy_ecdsa {
+            let delegator = self.get_delegation_ecdsa(&ecdsa)?.message.delegator;
+            let entry = keys
+                .iter_mut()
+                .find(|x| x.consensus == delegator)
+                .ok_or_eyre("missing consensus")?;
+
+            entry.proxy_ecdsa.push(ecdsa);
+        }
+
+        Ok(keys)
+    }
+
+    pub fn proxies(&self) -> &ProxySigners {
+        &self.proxy_signers
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use alloy::primitives::B256;
     use cb_common::signature::compute_signing_root;
     use lazy_static::lazy_static;
-    use tree_hash::Hash256;
 
     use super::*;
 
@@ -226,7 +277,7 @@ mod tests {
     }
 
     fn init_signing_manager() -> (SigningManager, BlsPublicKey) {
-        let mut signing_manager = SigningManager::new(CHAIN);
+        let mut signing_manager = SigningManager::new(CHAIN, None).unwrap();
 
         let consensus_signer = ConsensusSigner::new_random();
         let consensus_pk = consensus_signer.pubkey();
@@ -238,8 +289,7 @@ mod tests {
 
     mod test_proxy_bls {
         use cb_common::{
-            constants::COMMIT_BOOST_DOMAIN, signature::compute_domain,
-            signer::schemes::bls::verify_bls_signature,
+            constants::COMMIT_BOOST_DOMAIN, signature::compute_domain, signer::verify_bls_signature,
         };
 
         use super::*;
@@ -261,7 +311,8 @@ mod tests {
             );
 
             assert!(
-                signing_manager.has_proxy_bls(&signed_delegation.message.proxy),
+                signing_manager
+                    .has_proxy_bls_for_module(&signed_delegation.message.proxy, &MODULE_ID),
                 "Newly generated proxy key must be present in the signing manager's registry."
             );
         }
@@ -293,17 +344,16 @@ mod tests {
                 .unwrap();
             let proxy_pk = signed_delegation.message.proxy;
 
-            let data_root = Hash256::random();
-            let data_root_bytes = data_root.as_fixed_bytes();
+            let data_root = B256::random();
 
             let sig = signing_manager
-                .sign_proxy_bls(&proxy_pk.try_into().unwrap(), data_root_bytes)
+                .sign_proxy_bls(&proxy_pk.try_into().unwrap(), &data_root)
                 .await
                 .unwrap();
 
             // Verify signature
             let domain = compute_domain(CHAIN, COMMIT_BOOST_DOMAIN);
-            let signing_root = compute_signing_root(data_root_bytes.tree_hash_root().0, domain);
+            let signing_root = compute_signing_root(data_root.tree_hash_root().0, domain);
 
             let validation_result = verify_bls_signature(&proxy_pk, &signing_root, &sig);
 
@@ -317,7 +367,7 @@ mod tests {
     mod test_proxy_ecdsa {
         use cb_common::{
             constants::COMMIT_BOOST_DOMAIN, signature::compute_domain,
-            signer::schemes::ecdsa::verify_ecdsa_signature,
+            signer::verify_ecdsa_signature,
         };
 
         use super::*;
@@ -339,7 +389,8 @@ mod tests {
             );
 
             assert!(
-                signing_manager.has_proxy_ecdsa(&signed_delegation.message.proxy),
+                signing_manager
+                    .has_proxy_ecdsa_for_module(&signed_delegation.message.proxy, &MODULE_ID),
                 "Newly generated proxy key must be present in the signing manager's registry."
             );
         }
@@ -371,17 +422,16 @@ mod tests {
                 .unwrap();
             let proxy_pk = signed_delegation.message.proxy;
 
-            let data_root = Hash256::random();
-            let data_root_bytes = data_root.as_fixed_bytes();
+            let data_root = B256::random();
 
             let sig = signing_manager
-                .sign_proxy_ecdsa(&proxy_pk.try_into().unwrap(), data_root_bytes)
+                .sign_proxy_ecdsa(&proxy_pk.try_into().unwrap(), &data_root)
                 .await
                 .unwrap();
 
             // Verify signature
             let domain = compute_domain(CHAIN, COMMIT_BOOST_DOMAIN);
-            let signing_root = compute_signing_root(data_root_bytes.tree_hash_root().0, domain);
+            let signing_root = compute_signing_root(data_root.tree_hash_root().0, domain);
 
             let validation_result = verify_ecdsa_signature(&proxy_pk, &signing_root, &sig);
 

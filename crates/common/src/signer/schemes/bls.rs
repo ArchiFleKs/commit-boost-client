@@ -3,7 +3,6 @@ use alloy::rpc::types::beacon::{constants::BLS_DST_SIG, BlsPublicKey as BlsPubli
 use blst::BLST_ERROR;
 use derive_more::derive::{Deref, Display, From, Into, LowerHex};
 use serde::{Deserialize, Serialize};
-use ssz_derive::{Decode, Encode};
 use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 
@@ -23,8 +22,7 @@ pub type BlsSecretKey = blst::min_pk::SecretKey;
 // std traits
 #[derive(Debug, Clone, Copy, LowerHex, Display, PartialEq, Eq, Hash, Default)]
 // serde, ssz, tree_hash
-#[derive(Serialize, Deserialize, Encode, Decode, TreeHash)]
-#[ssz(struct_behaviour = "transparent")]
+#[derive(Serialize, Deserialize, TreeHash)]
 #[serde(transparent)]
 // derive_more
 #[derive(Deref, From, Into)]
@@ -56,6 +54,12 @@ impl BlsSigner {
     pub fn pubkey(&self) -> BlsPublicKey {
         match self {
             BlsSigner::Local(secret) => blst_pubkey_to_alloy(&secret.sk_to_pk()).into(),
+        }
+    }
+
+    pub fn secret(&self) -> [u8; 32] {
+        match self {
+            BlsSigner::Local(secret) => secret.clone().to_bytes(),
         }
     }
 

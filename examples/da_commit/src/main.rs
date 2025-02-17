@@ -39,15 +39,10 @@ impl DaCommitService {
     pub async fn run(self) -> Result<()> {
         // the config has the signer_client already setup, we can use it to interact
         // with the Signer API
-        let pubkeys = self.config.signer_client.get_pubkeys().await?;
-        info!(
-            consensus = pubkeys.consensus.len(),
-            proxy_bls = pubkeys.proxy_bls.len(),
-            proxy_ecdsa = pubkeys.proxy_ecdsa.len(),
-            "Received pubkeys"
-        );
+        let pubkeys = self.config.signer_client.get_pubkeys().await?.keys;
+        info!(pubkeys = %serde_json::to_string_pretty(&pubkeys).unwrap(), "Received pubkeys");
 
-        let pubkey = *pubkeys.consensus.first().ok_or_eyre("no key available")?;
+        let pubkey = pubkeys.first().ok_or_eyre("no key available")?.consensus;
         info!("Registered validator {pubkey}");
 
         let proxy_delegation_bls = self.config.signer_client.generate_proxy_key_bls(pubkey).await?;
@@ -110,11 +105,12 @@ async fn main() -> Result<()> {
     // Remember to register all your metrics before starting the process
     MY_CUSTOM_REGISTRY.register(Box::new(SIG_RECEIVED_COUNTER.clone()))?;
     // Spin up a server that exposes the /metrics endpoint to Prometheus
-    MetricsProvider::load_and_run(MY_CUSTOM_REGISTRY.clone())?;
 
     match load_commit_module_config::<ExtraConfig>() {
         Ok(config) => {
-            let _guard = initialize_tracing_log(&config.id);
+            let _guard = initialize_tracing_log(&config.id)?;
+
+            MetricsProvider::load_and_run(config.chain, MY_CUSTOM_REGISTRY.clone())?;
 
             info!(
                 module_id = %config.id,
@@ -125,7 +121,7 @@ async fn main() -> Result<()> {
             let service = DaCommitService { config };
 
             if let Err(err) = service.run().await {
-                error!(?err, "Service failed");
+                error!(%err, "Service failed");
             }
         }
         Err(err) => {

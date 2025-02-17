@@ -59,12 +59,12 @@ const config = {
     /** @type {import('@docusaurus/preset-classic').ThemeConfig} */
     ({
       // Replace with your project's social card
-      image: 'img/logo.jpg',
+      image: 'img/icon.png',
       navbar: {
         title: 'Commit Boost',
         logo: {
-          alt: 'Commit Boost Logo',
-          src: 'img/logo.jpg',
+          alt: 'Commit Boost Icon',
+          src: 'img/icon.png',
         },
         items: [
           { to: '/', label: 'Docs', position: 'left' },
@@ -92,12 +92,16 @@ const config = {
             title: 'Links',
             items: [
               {
-                label: 'Twitter',
+                label: 'Github',
+                href: 'https://github.com/Commit-Boost/commit-boost-client',
+              },
+              {
+                label: 'X (Twitter)',
                 href: 'https://x.com/Commit_Boost',
               },
               {
-                label: 'GitHub',
-                href: 'https://github.com/Commit-Boost/commit-boost-client',
+                label: 'Telegram',
+                href: 'https://t.me/+Pcs9bykxK3BiMzk5',
               },
             ],
           },
@@ -107,6 +111,7 @@ const config = {
       prism: {
         theme: prismThemes.github,
         darkTheme: prismThemes.dracula,
+        additionalLanguages: ['bash','toml'],
       },
     }),
 };

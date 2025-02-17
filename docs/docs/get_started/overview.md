@@ -1,39 +1,34 @@
 ---
-sidebar_position: 1
+description: Initial setup
 ---
 
 # Overview
 
-:::warning
-Commit-Boost is currently in alpha development and **NOT** ready for production use. Please use caution
-:::
+Commit-Boost is primarily based on [Docker](https://www.docker.com/) to enable modularity, sandboxing and cross-platform compatibility. It is also possible to run Commit-Boost [natively](/get_started/running/binary) without Docker.
 
-
-Commit-Boost currently uses [Docker](https://www.docker.com/) to enable modularity, sandboxing and cross-platform compatibility. We're also exploring [alternative](https://github.com/Commit-Boost/commit-boost-client/issues/18) approaches.
-
-In the current setup, each component roughly maps to a container: from a single `.toml` config file, the node operator can specify which modules they want to run, and Commit-Boost takes care of spinning up the services and creating links between them.
+Each component roughly maps to a container: from a single `.toml` config file, the node operator can specify which modules they want to run, and Commit-Boost takes care of spinning up the services and creating links between them.
 Commit-Boost ships with two core modules:
-- a PBS module which implements implements the [BuilderAPI](https://ethereum.github.io/builder-specs/) for [MEV Boost](https://docs.flashbots.net/flashbots-mev-boost/architecture-overview/specifications)
-- a signer module, which implements the [Signer API](/api) and provides the interface for modules to request proposer commitments
+- A PBS module which implements the [BuilderAPI](https://ethereum.github.io/builder-specs/) for [MEV Boost](https://docs.flashbots.net/flashbots-mev-boost/architecture-overview/specifications).
+- A signer module, which implements the [Signer API](/api) and provides the interface for modules to request proposer commitments.
 
 ## Setup
-Requirements:
-- Docker Engine up and running
 
-### Binaries
+The Commit-Boost CLI creates a dynamic `docker-compose` file, with services and ports already set up.
+
+Whether you're using Docker or running the binaries natively, you can compile from source directly from the repo, or download binaries and fetch docker images from the official releases.
+
+## Binaries and images
 Find the latest releases at https://github.com/Commit-Boost/commit-boost-client/releases.
 
 The modules are also published at [each release](https://github.com/orgs/Commit-Boost/packages?repo_name=commit-boost-client).
 
 ### From source
-Requirements: 
-- Rust 1.80
+Requirements:
+- Rust 1.83
 
 :::note
-run `rustup update` to update Rust and Cargo to the latest version
+Run `rustup update` to update Rust and Cargo to the latest version
 :::
-
-### Build CLI
 
 ```bash
 # Pull the repo
@@ -41,27 +36,43 @@ git clone https://github.com/Commit-Boost/commit-boost-client
 
 # Stable branch has the latest released version
 git checkout stable
-
-# Build the CLI
-cargo build --release --bin commit-boost
-
-# Check that it works
-./target/release/commit-boost --version
 ```
 
 :::note
-If you get an `openssl` related error try running: `apt-get update && apt-get install -y openssl ca-certificates libssl3 libssl-dev`
+If you get an `openssl` related error try running: `apt-get update && apt-get install -y openssl ca-certificates libssl3 libssl-dev build-essential pkg-config`
 :::
 
+### Docker
+You will need to build the CLI to create the `docker-compose` file:
 
-### Modules
-You can build modules with the following script:
+```bash
+# Build the CLI
+cargo build --release --bin commit-boost-cli
+
+# Check that it works
+./target/release/commit-boost-cli --version
+```
+
+and the modules as Docker images:
 ```bash
 bash scripts/build_local_images.sh
 ```
 
 :::note
-If you require `sudo` access to run Docker, you will need `sudo` to run some of the Commit-Boost commands. This is because under the hood Commit-Boost invokes the Docker API. You can double check this by running `docker info` in a terminal
+If you require `sudo` access to run Docker, you will need `sudo` to run some of the Commit-Boost commands. This is because under the hood Commit-Boost invokes the Docker API. You can double check this by running `docker info` in a terminal. Consider adding your user to the docker group following [ Docker’s official post-installation steps](https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user)
 :::
 
 This will create two local images called `commitboost_pbs_default` and `commitboost_signer` for the Pbs and Signer module respectively. Make sure to use these images in the `docker_image` field in the `[pbs]` and `[signer]` sections of the `.toml` config file, respectively.
+
+### Binaries
+
+Alternatively, you can also build the modules from source and run them without Docker, in which case you can skip the CLI and only compile the modules:
+
+```bash
+# Build the PBS module
+cargo build --release --bin commit-boost-pbs
+
+# Build the Signer module
+cargo build --release --bin commit-boost-signer
+```
+

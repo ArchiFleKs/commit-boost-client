@@ -1,10 +1,11 @@
-use std::fmt::{self, Debug, Display, LowerHex};
+use std::{
+    fmt::{self, Debug, Display, LowerHex},
+    str::FromStr,
+};
 
 use alloy::rpc::types::beacon::BlsSignature;
 use derive_more::derive::From;
 use serde::{Deserialize, Serialize};
-use ssz::{Decode, Encode};
-use ssz_derive::{Decode, Encode};
 use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash;
 
@@ -12,21 +13,18 @@ use crate::{
     constants::COMMIT_BOOST_DOMAIN,
     error::BlstErrorWrapper,
     signature::verify_signed_message,
-    signer::schemes::{bls::BlsPublicKey, ecdsa::EcdsaPublicKey},
+    signer::{BlsPublicKey, EcdsaPublicKey},
     types::Chain,
 };
 
-pub trait PublicKey:
-    AsRef<[u8]> + Debug + Clone + Copy + Encode + Decode + TreeHash + Display + LowerHex
-{
-}
+pub trait PublicKey: AsRef<[u8]> + Debug + Clone + Copy + TreeHash + Display + LowerHex {}
 
 impl PublicKey for EcdsaPublicKey {}
 
 impl PublicKey for BlsPublicKey {}
 
 // GENERIC PROXY DELEGATION
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Encode, Decode, TreeHash)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, TreeHash)]
 pub struct ProxyDelegation<T: PublicKey> {
     pub delegator: BlsPublicKey,
     pub proxy: T,
@@ -138,9 +136,31 @@ pub enum EncryptionScheme {
     Ecdsa,
 }
 
+impl Display for EncryptionScheme {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EncryptionScheme::Bls => write!(f, "bls"),
+            EncryptionScheme::Ecdsa => write!(f, "ecdsa"),
+        }
+    }
+}
+
+impl FromStr for EncryptionScheme {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "bls" => Ok(EncryptionScheme::Bls),
+            "ecdsa" => Ok(EncryptionScheme::Ecdsa),
+            _ => Err(format!("Unknown scheme: {s}")),
+        }
+    }
+}
+
 // TODO(David): This struct shouldn't be visible to module authors
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerateProxyRequest {
+    #[serde(rename = "pubkey")]
     pub consensus_pubkey: BlsPublicKey,
     pub scheme: EncryptionScheme,
 }
@@ -153,7 +173,19 @@ impl GenerateProxyRequest {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GetPubkeysResponse {
-    pub consensus: Vec<BlsPublicKey>,
+    pub keys: Vec<ConsensusProxyMap>,
+}
+
+/// Map of consensus pubkeys to proxies
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ConsensusProxyMap {
+    pub consensus: BlsPublicKey,
     pub proxy_bls: Vec<BlsPublicKey>,
     pub proxy_ecdsa: Vec<EcdsaPublicKey>,
+}
+
+impl ConsensusProxyMap {
+    pub fn new(consensus: BlsPublicKey) -> Self {
+        Self { consensus, proxy_bls: vec![], proxy_ecdsa: vec![] }
+    }
 }

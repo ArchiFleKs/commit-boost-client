@@ -17,17 +17,18 @@ use crate::{
     constants::GET_HEADER_ENDPOINT_TAG,
     error::PbsClientError,
     metrics::BEACON_NODE_STATUS,
-    state::{BuilderApiState, PbsState},
+    state::{BuilderApiState, PbsStateGuard},
 };
 
 #[tracing::instrument(skip_all, name = "get_header", fields(req_id = %Uuid::new_v4(), slot = params.slot))]
 pub async fn handle_get_header<S: BuilderApiState, A: BuilderApi<S>>(
-    State(state): State<PbsState<S>>,
+    State(state): State<PbsStateGuard<S>>,
     req_headers: HeaderMap,
     Path(params): Path<GetHeaderParams>,
 ) -> Result<impl IntoResponse, PbsClientError> {
+    let state = state.read().clone();
+
     state.publish_event(BuilderEvent::GetHeaderRequest(params));
-    state.get_or_update_slot_uuid(params.slot);
 
     let ua = get_user_agent(&req_headers);
     let ms_into_slot = ms_into_slot(params.slot, state.config.chain);
@@ -39,7 +40,7 @@ pub async fn handle_get_header<S: BuilderApiState, A: BuilderApi<S>>(
             state.publish_event(BuilderEvent::GetHeaderResponse(Box::new(res.clone())));
 
             if let Some(max_bid) = res {
-                info!(block_hash =% max_bid.block_hash(), value_eth = format_ether(max_bid.value()), "received header");
+                info!(value_eth = format_ether(max_bid.value()), block_hash =% max_bid.block_hash(), "received header");
 
                 BEACON_NODE_STATUS.with_label_values(&["200", GET_HEADER_ENDPOINT_TAG]).inc();
                 Ok((StatusCode::OK, axum::Json(max_bid)).into_response())

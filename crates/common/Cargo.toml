@@ -7,12 +7,9 @@ publish = false
 
 [dependencies]
 # ethereum
-alloy = { workspace = true, features = ["ssz"] }
-ethereum_ssz.workspace = true
+alloy.workspace = true
 ssz_types.workspace = true
-ethereum_ssz_derive.workspace = true
 ethereum_serde_utils.workspace = true
-ethereum-types.workspace = true
 
 # networking
 axum.workspace = true
@@ -20,11 +17,13 @@ reqwest.workspace = true
 
 # async / threads
 tokio.workspace = true
+async-trait.workspace = true
 
 # serialization
 toml.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 
 # telemetry
 tracing.workspace = true
@@ -37,6 +36,11 @@ tree_hash.workspace = true
 tree_hash_derive.workspace = true
 eth2_keystore.workspace = true
 k256.workspace = true
+aes.workspace = true
+ctr.workspace = true
+cipher.workspace = true
+pbkdf2.workspace = true
+sha2.workspace = true
 
 # misc
 thiserror.workspace = true
@@ -45,3 +49,6 @@ url.workspace = true
 rand.workspace = true
 bimap.workspace = true
 derive_more.workspace = true
+
+unicode-normalization.workspace = true
+base64.workspace = true

@@ -10,9 +10,10 @@ use reqwest::header::USER_AGENT;
 use tracing::{debug, error};
 
 use crate::{
-    constants::{STATUS_ENDPOINT_TAG, TIMEOUT_ERROR_CODE_STR},
+    constants::{MAX_SIZE_DEFAULT, STATUS_ENDPOINT_TAG, TIMEOUT_ERROR_CODE_STR},
     metrics::{RELAY_LATENCY, RELAY_STATUS_CODE},
     state::{BuilderApiState, PbsState},
+    utils::read_chunked_body_with_max,
 };
 
 /// Implements https://ethereum.github.io/builder-specs/#/Builder/status
@@ -30,7 +31,7 @@ pub async fn get_status<S: BuilderApiState>(
         let mut send_headers = HeaderMap::new();
         send_headers.insert(USER_AGENT, get_user_agent_with_version(&req_headers)?);
 
-        let relays = state.relays();
+        let relays = state.all_relays();
         let mut handles = Vec::with_capacity(relays.len());
         for relay in relays {
             handles.push(Box::pin(send_relay_check(relay, send_headers.clone())));
@@ -74,14 +75,14 @@ async fn send_relay_check(relay: &RelayClient, headers: HeaderMap) -> Result<(),
     let code = res.status();
     RELAY_STATUS_CODE.with_label_values(&[code.as_str(), STATUS_ENDPOINT_TAG, &relay.id]).inc();
 
-    let response_bytes = res.bytes().await?;
     if !code.is_success() {
+        let response_bytes = read_chunked_body_with_max(res, MAX_SIZE_DEFAULT).await?;
         let err = PbsError::RelayResponse {
             error_msg: String::from_utf8_lossy(&response_bytes).into_owned(),
             code: code.as_u16(),
         };
 
-        error!(?err, "status failed");
+        error!(%err, "status failed");
         return Err(err);
     };
 

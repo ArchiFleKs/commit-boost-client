@@ -5,8 +5,8 @@
 
 use lazy_static::lazy_static;
 use prometheus::{
-    register_histogram_vec_with_registry, register_int_counter_vec_with_registry, HistogramVec,
-    IntCounterVec, Registry,
+    register_histogram_vec_with_registry, register_int_counter_vec_with_registry,
+    register_int_gauge_vec_with_registry, HistogramVec, IntCounterVec, IntGaugeVec, Registry,
 };
 
 lazy_static! {
@@ -31,6 +31,26 @@ lazy_static! {
         PBS_METRICS_REGISTRY
     )
     .unwrap();
+
+    /// Latest slot for which relay delivered a header
+    pub static ref RELAY_LAST_SLOT: IntGaugeVec = register_int_gauge_vec_with_registry!(
+        "relay_last_slot",
+        "Latest slot for which relay delivered a header",
+        &["relay_id"],
+        PBS_METRICS_REGISTRY
+    )
+    .unwrap();
+
+    /// Latest slot for which relay delivered a header
+    // Don't store slot number to avoid creating high cardinality, if needed can just aggregate for 12sec
+    pub static ref RELAY_HEADER_VALUE: IntGaugeVec = register_int_gauge_vec_with_registry!(
+        "relay_header_value",
+        "Header value in gwei delivered by relay",
+        &["relay_id"],
+        PBS_METRICS_REGISTRY
+    )
+    .unwrap();
+
 
     // TO BEACON NODE
     /// Status code returned to beacon node by endpoint

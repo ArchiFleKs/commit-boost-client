@@ -1,8 +1,8 @@
 use std::net::SocketAddr;
 
 use alloy::{primitives::B256, rpc::types::beacon::relay::ValidatorRegistration};
+use async_trait::async_trait;
 use axum::{
-    async_trait,
     extract::State,
     response::{IntoResponse, Response},
     routing::post,
@@ -13,12 +13,13 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tracing::{error, info, trace};
+use url::Url;
 
 use super::{
     GetHeaderParams, GetHeaderResponse, SignedBlindedBeaconBlock, SubmitBlindedBlockResponse,
 };
 use crate::{
-    config::{load_env_var, BUILDER_SERVER_ENV},
+    config::{load_optional_env_var, BUILDER_URLS_ENV},
     pbs::BUILDER_EVENTS_PATH,
 };
 
@@ -30,33 +31,42 @@ pub enum BuilderEvent {
     GetStatusResponse,
     SubmitBlockRequest(Box<SignedBlindedBeaconBlock>),
     SubmitBlockResponse(Box<SubmitBlindedBlockResponse>),
-    MissedPayload { block_hash: B256, relays: String },
+    MissedPayload {
+        /// Hash for the block for which no payload was received
+        block_hash: B256,
+    },
     RegisterValidatorRequest(Vec<ValidatorRegistration>),
     RegisterValidatorResponse,
+    ReloadEvent,
+    ReloadResponse,
 }
 
 #[derive(Debug, Clone)]
 pub struct BuilderEventPublisher {
     client: reqwest::Client,
-    endpoints: Vec<String>,
+    endpoints: Vec<Url>,
 }
 
 impl BuilderEventPublisher {
-    pub fn new(endpoints: Vec<String>) -> Self {
+    pub fn new(endpoints: Vec<Url>) -> Self {
         Self { client: reqwest::Client::new(), endpoints }
     }
 
-    pub fn new_from_env() -> Option<Self> {
-        load_env_var(BUILDER_SERVER_ENV)
+    pub fn new_from_env() -> eyre::Result<Option<Self>> {
+        load_optional_env_var(BUILDER_URLS_ENV)
             .map(|joined| {
                 let endpoints = joined
+                    .trim()
                     .split(',')
-                    .map(|s| format!("http://{}{}", s, BUILDER_EVENTS_PATH))
-                    .collect();
+                    .map(|base| {
+                        let url = base.trim().parse::<Url>()?.join(BUILDER_EVENTS_PATH)?;
+                        Ok(url)
+                    })
+                    .collect::<eyre::Result<Vec<_>>>()?;
 
-                Self::new(endpoints)
+                Ok(Self::new(endpoints))
             })
-            .ok()
+            .transpose()
     }
 
     pub fn publish(&self, event: BuilderEvent) {

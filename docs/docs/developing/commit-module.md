@@ -4,12 +4,7 @@ sidebar_position: 2
 
 # Commit Module
 
-While a module can be written in any language, we currently provide some utils for Rust, with the goal of supporting more generalized APIs and simplify development in languages other than Rust.
-
-:::note
-Commit-Boost is still in alpha development, all APIs are subject to change
-:::
-
+While a module can be written in any language, we currently provide some utilities for Rust, with the goal of supporting more generalized APIs and simplify development in languages other than Rust.
 
 In Rust, we provide utilities to load and run modules. Simply add to your `Cargo.toml`:
 ```toml
@@ -25,7 +20,7 @@ use commit_boost::prelude::*;
 ## Config
 Your module will likely need a configuration for the Node Operator to customize. This will have to be in the `cb-config.toml` file, in the correct `[[module]]` section. In the module, you can define and load your config as follows.
 
-First define all the parameters needed in a struct:
+First, define all the parameters needed in a struct:
 ```rust
 #[derive(Debug, Deserialize)]
 struct ExtraConfig {
@@ -61,7 +56,7 @@ Furthermore, in order to request a signature, we'd need a public key of the vali
 let pubkeys = config.signer_client.get_pubkeys().await.unwrap();
 ```
 
-Which will essentially call the `get_pubkeys` endpoint of the [SignerAPI](/api).
+Which will call the `get_pubkeys` endpoint of the [SignerAPI](/api), returning all the consensus pubkeys and the corresponding proxy keys, of your module.
 
 Then, we can request a signature either with a consensus key or with a proxy key:
 
@@ -109,7 +104,7 @@ You can use the `prometheus` crate to create a custom registry and metrics, for 
 
 ```rust
 static ref MY_CUSTOM_REGISTRY: Registry = Registry::new_custom(Some("da_commit".to_string()), None).unwrap();
-static ref SIG_RECEIVED_COUNTER: IntCounter = IntCounter::new("signature_received", "successful signatures requests received").unwrap();
+static ref SIG_RECEIVED_COUNTER: IntCounter = IntCounter::new("signature_received", "successful signature requests received").unwrap();
 ```
 
 ### Start Metrics Provider
@@ -125,4 +120,4 @@ All that is left is to use the metrics throughout your code:
 ```rust
 SIG_RECEIVED_COUNTER.inc();
 ```
-These will automatically scraped by the Prometheus service running, and exposed on port `9090`. We plan to allow developers to ship pre-made dashboards together with their modules, to allow Node Operators to have an improved oversight on the modules they are running.
+These will be automatically scraped by the Prometheus service running, and exposed on port `9090`. We plan to allow developers to ship pre-made dashboards together with their modules, to allow Node Operators to have an improved oversight on the modules they are running.
